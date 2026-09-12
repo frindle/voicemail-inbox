@@ -1,0 +1,74 @@
+# ===========================================================================
+# voicemail-inbox -- private voicemail inbox + DNC/robocall complaint tooling.
+# Single-file FastAPI app (server.py) served by uvicorn on :8000.
+#
+# NETWORKING: br0 macvlan with a static IP + PINNED MAC (homelab standard).
+# The pinned MAC is required -- an unpinned MAC gets a fresh random one on
+# every container recreate, which Firewalla flags as a new device and
+# quarantines (see homelab-database services.md, the ollama row).
+#   IP : 10.0.12.44   (unused + unrecorded in homelab-database; .40 kept clear of the resell sidecar ambiguity)
+#   MAC: 02:42:0A:00:0C:2C   (0A:00:0C:2C IP-encodes 10.0.12.44)
+# Reachable on the LAN at http://10.0.12.44:8000 -- point the iPhone Shortcut
+# and the Whisper transcription job at that address.
+#
+# DEPLOY (on Unraid):
+#   mkdir -p /mnt/user/data/Documents/Voicemail
+#   cd /mnt/user/appdata && git clone https://github.com/frindle/voicemail-inbox
+#   cd voicemail-inbox
+#   echo "AUTH_TOKEN=<the shared bearer token>" > .env    # gitignored
+#   docker-compose up -d --build
+# Update thereafter:
+#   git fetch origin && git reset --hard origin/main && docker-compose up -d --build
+# ===========================================================================
+
+services:
+  voicemail-inbox:
+    build: .
+    image: voicemail-inbox
+    container_name: voicemail-inbox
+    restart: unless-stopped
+    networks:
+      br0:
+        ipv4_address: 10.0.12.44
+    mac_address: "02:42:0A:00:0C:2C"
+    environment:
+      # Container-internal data path (matches the Dockerfile ENV/VOLUME).
+      - DATA_DIR=/data
+      # The ONLY secret. Supplied from a gitignored .env in this dir (docker
+      # -compose auto-loads it) or the host environment -- NEVER baked into
+      # the image or committed. `git reset --hard` in update.sh leaves the
+      # untracked .env in place.
+      - AUTH_TOKEN=${AUTH_TOKEN}
+    volumes:
+      # SQLite voicemails.db + audio/ blobs live here. Losing this loses all
+      # voicemails + transcripts.
+      - /mnt/user/data/Documents/Voicemail:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/frindle/voicemail-inbox/main/icon.png"
+
+  voicemail-whisper:
+    build:
+      context: .
+      dockerfile: Dockerfile.whisper
+    image: voicemail-whisper
+    container_name: voicemail-whisper
+    restart: unless-stopped
+    network_mode: "service:voicemail-inbox"
+    depends_on:
+      - voicemail-inbox
+    environment:
+      - VOICEMAIL_URL=http://127.0.0.1:8000
+      - WHISPER_MODEL=small.en
+    volumes:
+      - /mnt/user/data/Documents/Voicemail/whisper-models:/models
+
+networks:
+  br0:
+    external: true
+    name: br0

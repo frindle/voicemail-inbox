@@ -26,6 +26,11 @@ and back-fills the number.
   be NULL until transcribed), `caller_number TEXT`, `caller_last4 TEXT`.
 - The existing sibling `POST /set-caller` (search for `def set_caller`) shows the
   house style: last-4 normalisation, `_db()` usage, no bearer (Cloudflare-gated).
+  Add the new endpoint near it (around `server.py:316`).
+- `server.py` already reads `DATA_DIR` (env var, default `./data`) for its data
+  and SQLite location. The test fixture sets `DATA_DIR` to a temp directory so
+  tests run against an isolated DB — no code change is needed for that; it is
+  named here only so the harness's env is fully documented.
 
 ## Why duration is the match key (not clock time)
 `created_at` is the UPLOAD time, so it does NOT line up with the clock time in a

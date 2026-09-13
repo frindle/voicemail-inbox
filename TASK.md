@@ -14,6 +14,12 @@ show caller number, spam flag, screenshot list, or any checkmark state.
 
 server.py:378 (`def api_list()`, route `GET /api/list`)
 
+## Environment
+
+The test fixture sets `DATA_DIR` to an isolated temp directory *before* importing
+`server.py` (server.py reads `DATA_DIR` / the DB path at import time). Honour the
+existing `DATA_DIR`-based path resolution; do not hardcode a data directory.
+
 ## Required change
 
 In api_list(), SELECT the new columns and add to each returned dict:
@@ -49,6 +55,8 @@ Behaviour that must NOT change:
 - `"vm":`
 - `"shot":`
 - `"tcpa":`
+- `"ftc":`
+- `"fcc":`
 
 (The gate holds the reference impl against this list. If the verify goes green
 while one of these is absent from the changed files, the verify does not

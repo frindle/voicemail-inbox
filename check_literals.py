@@ -30,7 +30,7 @@ import sys
 TARGET = pathlib.Path('server.py')
 
 # frozen from TASK.md -- re-run `ollama-dispatch-scaffold --freeze-literals .`
-LITERALS = [[None, 'ov_vm'], [None, 'screenshot_ingested'], [None, '"vm":'], [None, '"shot":'], [None, '"tcpa":']]
+LITERALS = [[None, 'ov_vm'], [None, 'screenshot_ingested'], [None, '"vm":'], [None, '"shot":'], [None, '"tcpa":'], [None, '"ftc":'], [None, '"fcc":']]
 
 
 def _parse_must_contain(task_text):

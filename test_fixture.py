@@ -124,6 +124,20 @@ CASES = [
                           it["callback_number"] is None))
              (_item(_seed())),
      ("shared.wav", "pending", True, 2.5, True, True, True, True)),
+
+    # kills survivor server.py:393 (return None instead of []): a NULL
+    # screenshot_paths must parse to [] (an empty list), never None.
+    ("NULL screenshot_paths -> [] (a list, not None)",
+     lambda: (lambda it: (it["screenshot_paths"], type(it["screenshot_paths"]) is list))
+             (_item(_seed(screenshot_paths=None))),
+     ([], True)),
+
+    # kills survivor server.py:417 (the ov_fcc `is not None` branch, never
+    # exercised): ov_fcc set must override to True while ftc/tcpa stay auto-False.
+    ("ov_fcc override exercised: ov_fcc=1 -> fcc True, ftc/tcpa auto-False",
+     lambda: (lambda it: (_b(it["fcc"]), _b(it["ftc"]), _b(it["tcpa"])))
+             (_item(_seed(ov_fcc=1))),
+     ((True, False, True), (False, True, True), (False, True, True))),
 ]
 
 

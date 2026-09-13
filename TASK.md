@@ -35,6 +35,9 @@ Behaviour that must NOT change:
 - A legacy v1 database (only `id`, `created_at`, `orig_name`, `audio_path`, `status`, `transcript`, `duration_secs`) still migrates in place -- existing rows are preserved, never dropped or recreated.
 - Every pre-existing column keeps its exact type and default (e.g. `is_spam INTEGER DEFAULT 0`), and the import-time `init_db()` call at module load still succeeds.
 
+## Environment
+- `DATA_DIR` — the fixture sets this to a temp dir before import; `server.py` reads it to locate the SQLite DB (`DB_PATH`). Do not hardcode a path.
+
 ## Must contain
 
 - `screenshot_ingested`

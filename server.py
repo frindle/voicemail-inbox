@@ -380,13 +380,21 @@ def api_list():
     try:
         rows = conn.execute(
             "SELECT id, created_at, orig_name, status, transcript,"
-            " duration_secs, caller_last4, progress, callback_number"
+            " duration_secs, caller_last4, progress, callback_number,"
+            " caller_number, is_spam, screenshot_paths, screenshot_ingested,"
+            " ov_vm, ov_shot, ov_ftc, ov_fcc, ov_tcpa"
             " FROM voicemails ORDER BY created_at DESC"
         ).fetchall()
     finally:
         conn.close()
-    return [
-        {
+
+    def _flag(ov, auto):
+        return bool(auto) if ov is None else bool(ov)
+
+    items = []
+    for r in rows:
+        paths = r["screenshot_paths"]
+        items.append({
             "id": r["id"],
             "created_at": r["created_at"],
             "orig_name": r["orig_name"],
@@ -397,9 +405,16 @@ def api_list():
             "progress": r["progress"],
             "callback_number": r["callback_number"],
             "audio_url": "/audio/" + r["id"],
-        }
-        for r in rows
-    ]
+            "caller_number": r["caller_number"],
+            "is_spam": bool(r["is_spam"]),
+            "screenshot_paths": json.loads(paths) if paths else [],
+            "vm": _flag(r["ov_vm"], r["status"] == "done"),
+            "shot": _flag(r["ov_shot"], r["screenshot_ingested"]),
+            "ftc": _flag(r["ov_ftc"], False),
+            "fcc": _flag(r["ov_fcc"], False),
+            "tcpa": _flag(r["ov_tcpa"], False),
+        })
+    return items
 
 
 FTC_URL = "https://donotcall.gov/report.html"

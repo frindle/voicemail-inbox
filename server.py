@@ -474,6 +474,41 @@ def mark_spam(payload: dict, authorization: str = Header(default=None)):
     return {"id": vm_id, "is_spam": 1}
 
 
+CHECKMARK_FIELDS = ("vm", "shot", "ftc", "fcc", "tcpa")
+
+
+@app.post("/checkmark/{vm_id}/{field}")
+def toggle_checkmark(
+    vm_id: str, field: str, authorization: str = Header(default=None),
+):
+    _check_auth(authorization)
+    if field not in CHECKMARK_FIELDS:
+        raise HTTPException(status_code=400, detail="invalid field")
+
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT status, screenshot_ingested, ov_{} FROM voicemails"
+            " WHERE id = ?".format(field), (vm_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown voicemail")
+        auto = ((row["status"] == "done") if field == "vm"
+                else bool(row["screenshot_ingested"]) if field == "shot"
+                else False)
+        ov = row["ov_" + field]
+        current = bool(auto) if ov is None else bool(ov)
+        new_val = 0 if current else 1
+        conn.execute(
+            "UPDATE voicemails SET ov_{} = ? WHERE id = ?".format(field),
+            (new_val, vm_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"field": field, "value": bool(new_val)}
+
+
 @app.get("/api/complaint/{vm_id}")
 def complaint_json(vm_id: str, authorization: str = Header(default=None)):
     _check_auth(authorization)

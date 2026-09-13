@@ -68,8 +68,24 @@ def process_once(base_url, model, session, auth_token=""):
                 f.close()
 
             segments, info = model.transcribe(tmp_path)
-            transcript = " ".join(s.text.strip() for s in segments).strip()
             duration = getattr(info, "duration", None)
+            parts = []
+            last_pct = 0
+            for seg in segments:
+                parts.append(seg.text.strip())
+                if duration:  # info.duration can be None/0 -> skip progress
+                    pct = int(min(100, max(0, (seg.end / duration) * 100)))
+                    if pct > last_pct:
+                        last_pct = pct
+                        try:
+                            session.post(
+                                base_url + "/internal/progress",
+                                json={"id": row["id"], "progress": pct},
+                                headers=headers,
+                            )
+                        except Exception:
+                            pass  # best-effort; never block the transcript
+            transcript = " ".join(t for t in parts if t).strip()
 
             session.post(
                 base_url + "/internal/transcript",

@@ -15,8 +15,8 @@ import time
 import urllib.parse
 import uuid
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
@@ -69,6 +69,8 @@ def init_db():
             ("identifiability", "TEXT"),
             # Reserved for the later TCPA layer -- add now so no migration needed.
             ("tcpa_provisions", "TEXT"),
+            ("caller_last4", "TEXT"),
+            ("progress", "INTEGER"),
         ):
             if col not in cols:
                 conn.execute(
@@ -93,6 +95,7 @@ def _check_auth(authorization):
 @app.post("/ingest")
 async def ingest(
     file: UploadFile = File(default=None),
+    caller_last4: str = Form(default=None),
     authorization: str = Header(default=None),
 ):
     _check_auth(authorization)
@@ -112,9 +115,10 @@ async def ingest(
     try:
         conn.execute(
             "INSERT INTO voicemails (id, created_at, orig_name, audio_path,"
-            " status, transcript, duration_secs)"
-            " VALUES (?, ?, ?, ?, 'processing', NULL, NULL)",
-            (vm_id, time.time(), orig_name, audio_path),
+            " status, transcript, duration_secs, caller_last4, progress)"
+            " VALUES (?, ?, ?, ?, 'processing', NULL, NULL, ?, 0)",
+            (vm_id, time.time(), orig_name, audio_path,
+             (caller_last4 or "").strip() or None),
         )
         conn.commit()
     finally:
@@ -252,7 +256,8 @@ def set_transcript(
             "UPDATE voicemails SET status = 'done', transcript = ?,"
             " duration_secs = ?, is_robocall = ?, call_category = ?,"
             " caller_company = ?, callback_number = ?, caller_url = ?,"
-            " what_said_summary = ?, identifiability = ? WHERE id = ?",
+            " what_said_summary = ?, identifiability = ?,"
+            " progress = 100 WHERE id = ?",
             (transcript, duration, fields["is_robocall"],
              fields["call_category"], fields["caller_company"],
              fields["callback_number"], fields["caller_url"],
@@ -262,6 +267,50 @@ def set_transcript(
     finally:
         conn.close()
     return {"ok": True}
+
+
+@app.post("/internal/progress")
+def set_progress(payload: dict, authorization: str = Header(default=None)):
+    _check_auth(authorization)
+    vm_id = payload.get("id")
+    try:
+        progress = int(payload.get("progress"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid progress")
+    progress = max(0, min(100, progress))
+    conn = _db()
+    try:
+        cur = conn.execute(
+            "UPDATE voicemails SET progress = ? WHERE id = ?",
+            (progress, vm_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="unknown voicemail")
+    finally:
+        conn.close()
+    return {"ok": True, "progress": progress}
+
+
+@app.post("/delete/{vm_id}")
+def delete_voicemail(vm_id: str):
+    # Access-gated upstream (Cloudflare) -- no bearer required.
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT audio_path FROM voicemails WHERE id = ?", (vm_id,)
+        ).fetchone()
+        if row is not None:
+            conn.execute("DELETE FROM voicemails WHERE id = ?", (vm_id,))
+            conn.commit()
+            ap = row["audio_path"]
+            if ap and os.path.exists(ap):
+                try:
+                    os.remove(ap)
+                except OSError:
+                    pass
+    finally:
+        conn.close()
+    return RedirectResponse("/", status_code=303)
 
 
 @app.get("/audio/{vm_id}")
@@ -284,7 +333,8 @@ def api_list():
     try:
         rows = conn.execute(
             "SELECT id, created_at, orig_name, status, transcript,"
-            " duration_secs FROM voicemails ORDER BY created_at DESC"
+            " duration_secs, caller_last4, progress, callback_number"
+            " FROM voicemails ORDER BY created_at DESC"
         ).fetchall()
     finally:
         conn.close()
@@ -296,6 +346,9 @@ def api_list():
             "status": r["status"],
             "transcript": r["transcript"],
             "duration_secs": r["duration_secs"],
+            "caller_last4": r["caller_last4"],
+            "progress": r["progress"],
+            "callback_number": r["callback_number"],
             "audio_url": "/audio/" + r["id"],
         }
         for r in rows
@@ -322,9 +375,11 @@ def _get_row(vm_id: str):
 
 def _complaint_text(caller_number, created_at, transcript):
     who = caller_number if caller_number else "an unknown number"
+    _d, _t12, _ = _dmy_hm(created_at)
+    when = "{} at {}".format(_d, _t12) if _d else str(created_at)
     return (
-        "I received an unwanted robocall from {} at {}. "
-        "The call said: {}".format(who, created_at, transcript or "")
+        "I received an unwanted robocall from {} on {}. "
+        "The call said: {}".format(who, when, transcript or "")
     )
 
 
@@ -413,19 +468,41 @@ def complaint_page(vm_id: str):
         raise HTTPException(status_code=404, detail="unknown voicemail")
     caller = (html.escape(row["caller_number"])
               if row["caller_number"] else "(unknown)")
+    caller_val = html.escape(row["caller_number"] or "", quote=True)
+    callback_val = html.escape(row["callback_number"] or "", quote=True)
+    _d, _t12, _ = _dmy_hm(row["created_at"])
+    when = "{} at {}".format(_d, _t12) if _d else str(row["created_at"])
     text = html.escape(_complaint_text(
         row["caller_number"], row["created_at"], row["transcript"]))
+    vm_esc = html.escape(vm_id, quote=True)
     parts = [
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',
         "<title>Report this call</title></head><body>",
         "<h1>Report this robocall</h1>",
         "<p>Caller number: <strong>{}</strong></p>".format(caller),
-        "<p>Call time: {}</p>".format(html.escape(str(row["created_at"]))),
+        "<p>Call time: {}</p>".format(html.escape(when)),
+        '<form method="post" action="/complaint/{}/update">'.format(vm_esc),
+        '<p><label>Caller number (caller ID):<br>'
+        '<input type="text" name="caller_number" value="{}"></label></p>'
+        .format(caller_val),
+        '<p><label>Callback number (for reverse search):<br>'
+        '<input type="text" name="callback_number" value="{}"></label></p>'
+        .format(callback_val),
+        '<p><button type="submit">Save numbers</button></p>',
+        "</form>",
         "<p>Transcript:</p><blockquote>{}</blockquote>".format(
             html.escape(row["transcript"] or "")),
         "<h2>Copy-ready complaint text</h2>",
         '<pre style="white-space:pre-wrap">{}</pre>'.format(text),
+        '<p><a href="/complaint/{}/report">'
+        "<strong>Auto-fill FTC/FCC complaint &rarr;</strong></a></p>"
+        .format(vm_esc),
+        '<div style="background:#eef;border:1px solid #99c;'
+        'padding:.75rem;margin:1rem 0">'
+        "<strong>TCPA:</strong> unwanted robocalls may carry statutory "
+        "damages of $500 per call, up to $1,500 per call if willful."
+        "</div>",
         "<ul>",
         '<li><a href="{}">File with the FTC (Do Not Call registry)</a>'
         "</li>".format(FTC_URL),
@@ -434,6 +511,29 @@ def complaint_page(vm_id: str):
         '</body></html>',
     ]
     return HTMLResponse("".join(parts))
+
+
+@app.post("/complaint/{vm_id}/update")
+def complaint_update(
+    vm_id: str,
+    caller_number: str = Form(default=None),
+    callback_number: str = Form(default=None),
+):
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM voicemails WHERE id = ?", (vm_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown voicemail")
+        conn.execute(
+            "UPDATE voicemails SET caller_number = ?, callback_number = ?"
+            " WHERE id = ?",
+            ((caller_number or "").strip() or None,
+             (callback_number or "").strip() or None, vm_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse("/complaint/" + vm_id, status_code=303)
 
 
 def _render_index(items):
@@ -455,7 +555,12 @@ def _render_index(items):
             '<audio controls src="/audio/%s"></audio>' % html.escape(it["id"])
         )
         if it["status"] != "done":
-            parts.append('<p class="status">Transcribing&hellip;</p>')
+            prog = it.get("progress")
+            if prog is not None:
+                parts.append(
+                    '<p class="status">Transcribing %d%%</p>' % int(prog))
+            else:
+                parts.append('<p class="status">Transcribing&hellip;</p>')
         elif it["transcript"]:
             parts.append("<p>%s</p>" % html.escape(it["transcript"]))
         else:
@@ -467,6 +572,13 @@ def _render_index(items):
         parts.append(
             '<p><a href="/complaint/%s">Report spam</a></p>'
             % html.escape(it["id"])
+        )
+        parts.append(
+            '<form method="post" action="/delete/%s" '
+            'onsubmit="return confirm(&#39;Delete this voicemail?&#39;);" '
+            'style="display:inline">'
+            '<button type="submit">Delete</button></form>'
+            % html.escape(it["id"], quote=True)
         )
         parts.append("</div>")
     parts.append(

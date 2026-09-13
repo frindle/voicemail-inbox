@@ -71,6 +71,13 @@ def init_db():
             ("tcpa_provisions", "TEXT"),
             ("caller_last4", "TEXT"),
             ("progress", "INTEGER"),
+            ("screenshot_ingested", "INTEGER DEFAULT 0"),
+            ("screenshot_paths", "TEXT"),
+            ("ov_vm", "INTEGER"),
+            ("ov_shot", "INTEGER"),
+            ("ov_ftc", "INTEGER"),
+            ("ov_fcc", "INTEGER"),
+            ("ov_tcpa", "INTEGER"),
         ):
             if col not in cols:
                 conn.execute(

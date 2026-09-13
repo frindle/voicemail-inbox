@@ -152,20 +152,71 @@ def case_noise_only_no_crash():
 
 
 CASES = [
+    # 1. THE POSITIVE CASE -- the thing the fix is supposed to start doing.
     ("two distinct durations -> matched by duration",
      case_two_distinct_durations, ("+18446315333", "+18558060602")),
-    ("duration collision -> newest row to first entry (order fallback)",
-     case_duration_collision_falls_to_order, ("+18446315333", "+18558060602")),
+    # 2. BOUNDARY (tolerance <= 2s): exactly AT the edge must still be "duration".
+    ("duration diff exactly 2s -> within tolerance, by=duration",
+     lambda: (lambda r: (r.json()["matched"][0]["by"], _num("A")[0]))(
+         client.post("/ingest-screenshots", data={"ocr_text": VM_APP_TWO}))
+         if (_reset([("A", 100.0, 52.0, None)]), True)[1] else None,
+     ("duration", "+18446315333")),
+    # 3. BOUNDARY: just PAST the edge (diff 3s) must fall back to "order".
+    ("duration diff 3s -> outside tolerance, by=order fallback",
+     lambda: (lambda r: (r.json()["matched"][0]["by"], _num("A")[0]))(
+         client.post("/ingest-screenshots", data={"ocr_text": VM_APP_TWO}))
+         if (_reset([("A", 100.0, 53.0, None)]), True)[1] else None,
+     ("order", "+18446315333")),
+    # 4. OVER-BROADENING CONTROL: clock time after the date marker is NOT a duration.
     ("clock time 16:14 is NOT parsed as a duration (match reason = order)",
      case_clock_not_treated_as_duration, ("5333", "order")),
-    ("+1XXXXXXXXXX E.164 format parses",
-     case_e164_format, ("+18446315333", "5333")),
+    # 5. OVER-BROADENING CONTROL: status-bar clock 19:00 (=1140s) is not a duration either.
+    ("status-bar clock 19:00 NOT read as a 1140s duration (by=order)",
+     lambda: (lambda r: (_num("A")[1], r.json()["matched"][0]["by"]))(
+         client.post("/ingest-screenshots", data={"ocr_text": E164_ONE}))
+         if (_reset([("A", 100.0, 1140.0, None)]), True)[1] else None,
+     ("5333", "order")),
+    # 6. AMBIGUITY / ZERO CANDIDATES: second number has no row left -> unmatched, not a guess.
+    ("two numbers, one NULL row -> first claims it, second goes to unmatched",
+     lambda: (lambda r: (_num("A")[0], r.json()["unmatched"]))(
+         client.post("/ingest-screenshots", data={"ocr_text": VM_APP_TWO}))
+         if (_reset([("A", 100.0, 30.0, None)]), True)[1] else None,
+     ("+18446315333", ["+18558060602"])),
+    # 7. SAFETY: repeated number in Recents dedupes -> exactly one match, unmatched empty.
+    ("repeated number in Recents OCR -> one entry, unmatched stays empty",
+     lambda: (lambda r: (len(r.json()["matched"]), r.json()["unmatched"], _num("A")[0]))(
+         client.post("/ingest-screenshots", data={"ocr_text": RECENTS_ONE}))
+         if (_reset([("A", 100.0, 30.0, None)]), True)[1] else None,
+     (1, [], "+18446315333")),
+    # 8. DEGENERATE INPUT: blank ocr_text must be a clean 400, not a silent 200.
+    ("blank/whitespace ocr_text -> HTTP 400",
+     lambda: client.post("/ingest-screenshots", data={"ocr_text": "   \n"}).status_code,
+     400),
+    # 9. DEGENERATE INPUT: missing key must be a clean 400 (not 500, not 200).
     ("missing ocr_text -> HTTP 400",
      case_missing_ocr_text_400, 400),
+    # 10. SAFETY / NO-EVIDENCE: never overwrite an existing caller_number.
     ("never overwrites an existing caller_number (only NULL rows)",
      case_does_not_overwrite_existing, ("+19999999999", "+18446315333")),
+    # 11. SAFETY / NO-EVIDENCE: noise-only OCR -> do nothing, no crash.
     ("noise-only OCR -> no match, no crash, existing row untouched",
      case_noise_only_no_crash, ([], None)),
+    # 12. OVER-BROADENING CONTROL: short digit runs are not phone numbers.
+    ("short digit runs (5333/631) are NOT phone candidates -> nothing claimed",
+     lambda: (lambda r: (r.json()["matched"], r.json()["unmatched"], _num("A")[0]))(
+         client.post("/ingest-screenshots", data={"ocr_text": "5333\n631\n844\n19:00\n"}))
+         if (_reset([("A", 100.0, 30.0, None)]), True)[1] else None,
+     ([], [], None)),
+    # 13. IDEMPOTENCE / PRESERVATION: re-posting the same OCR is a no-op that keeps the number.
+    ("second identical post -> no NULL rows left, matched empty, number preserved",
+     lambda: (lambda r2: (_num("A")[0], r2.json()["matched"], r2.json()["unmatched"]))(
+         client.post("/ingest-screenshots", data={"ocr_text": E164_ONE}))
+         if (_reset([("A", 100.0, 30.0, None)]),
+             client.post("/ingest-screenshots", data={"ocr_text": E164_ONE}), True)[2] else None,
+     ("+18446315333", [], ["+18446315333"])),
+    # 14. REGRESSION HALF: pre-existing endpoint must keep working after the change.
+    ("regression: GET /healthz still returns {status: ok}",
+     lambda: client.get("/healthz").json(), {"status": "ok"}),
 ]
 
 

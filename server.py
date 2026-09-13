@@ -313,6 +313,46 @@ def delete_voicemail(vm_id: str):
     return RedirectResponse("/", status_code=303)
 
 
+@app.post("/set-caller")
+def set_caller(caller_number: str = Form(default=None), caller_last4: str = Form(default=None)):
+    # Access-gated upstream (Cloudflare) -- no bearer required.
+    num = (caller_number or "").strip()
+    if not num:
+        raise HTTPException(status_code=400, detail="missing caller_number")
+
+    source = caller_last4 if caller_last4 and sum(c.isdigit() for c in caller_last4) >= 4 else num
+    last4 = "".join(ch for ch in source if ch.isdigit())[-4:]
+
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT id, caller_number FROM voicemails WHERE caller_last4 = ?"
+            " ORDER BY (caller_number IS NULL) DESC, created_at DESC LIMIT 1",
+            (last4,),
+        ).fetchone()
+        if row is not None:
+            matched = "last4"
+        else:
+            row = conn.execute(
+                "SELECT id, caller_number FROM voicemails ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                matched = "recent"
+        if row is None:
+            raise HTTPException(status_code=404, detail="no voicemails")
+
+        conn.execute(
+            "UPDATE voicemails SET caller_number = ?,"
+            " caller_last4 = COALESCE(caller_last4, ?) WHERE id = ?",
+            (num, last4, row["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"ok": True, "id": row["id"], "matched": matched}
+
+
 @app.get("/audio/{vm_id}")
 def get_audio(vm_id: str):
     conn = _db()

@@ -70,6 +70,15 @@ Behaviour that must NOT change:
 while one of these is absent from the changed file, the verify does not enforce
 the spec.)
 
+## Environment (set by the verify/fixture, informational)
+
+The verify stands the app up in isolation, so it sets these env vars -- your code
+reads them exactly as the current app already does; do not change how they are read:
+- `DATA_DIR` -- the app's data root (`os.environ["DATA_DIR"]`); the fixture points
+  it at a fresh tempdir per case so no real data is touched.
+- `AUTH_TOKEN` -- set non-empty by the fixture on purpose, to prove `/set-caller`
+  works with NO `Authorization` header (it must NOT call `_check_auth`).
+
 ## Scope
 
 Only edit `server.py`; do not edit `verify.sh`, `test_fixture.py` or `TASK.md`.

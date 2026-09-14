@@ -71,6 +71,10 @@ def init_db():
             ("tcpa_provisions", "TEXT"),
             ("caller_last4", "TEXT"),
             ("progress", "INTEGER"),
+            # Log-table workflow columns (human-filed state, set via /mark).
+            ("has_screenshots", "INTEGER DEFAULT 0"),
+            ("ftc_filed", "INTEGER DEFAULT 0"),
+            ("fcc_filed", "INTEGER DEFAULT 0"),
         ):
             if col not in cols:
                 conn.execute(
@@ -373,7 +377,8 @@ def api_list():
     try:
         rows = conn.execute(
             "SELECT id, created_at, orig_name, status, transcript,"
-            " duration_secs, caller_last4, progress, callback_number"
+            " duration_secs, caller_last4, progress, callback_number,"
+            " caller_number, audio_path, has_screenshots, ftc_filed, fcc_filed"
             " FROM voicemails ORDER BY created_at DESC"
         ).fetchall()
     finally:
@@ -389,6 +394,11 @@ def api_list():
             "caller_last4": r["caller_last4"],
             "progress": r["progress"],
             "callback_number": r["callback_number"],
+            "caller_number": r["caller_number"],
+            "audio_path": r["audio_path"],
+            "has_screenshots": r["has_screenshots"],
+            "ftc_filed": r["ftc_filed"],
+            "fcc_filed": r["fcc_filed"],
             "audio_url": "/audio/" + r["id"],
         }
         for r in rows
@@ -520,6 +530,7 @@ def complaint_page(vm_id: str):
         '<html lang="en"><head><meta charset="utf-8">',
         "<title>Report this call</title></head><body>",
         "<h1>Report this robocall</h1>",
+        '<audio controls src="/audio/{}"></audio>'.format(vm_esc),
         "<p>Caller number: <strong>{}</strong></p>".format(caller),
         "<p>Call time: {}</p>".format(html.escape(when)),
         '<form method="post" action="/complaint/{}/update">'.format(vm_esc),
@@ -576,51 +587,130 @@ def complaint_update(
     return RedirectResponse("/complaint/" + vm_id, status_code=303)
 
 
+# Whitelist of workflow flags the /mark route may touch. It ONLY records
+# human-filed state in this DB -- it never files or submits anything anywhere.
+_MARK_FLAGS = ("ftc_filed", "fcc_filed")
+
+
+@app.post("/complaint/{vm_id}/mark")
+def complaint_mark(
+    vm_id: str,
+    flag: str = Form(default=None),
+    value: str = Form(default=None),
+    authorization: str = Header(default=None),
+):
+    _check_auth(authorization)
+    if flag not in _MARK_FLAGS:
+        raise HTTPException(status_code=400, detail="unknown flag")
+    # Coerce the toggle value to a strict 0/1.
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        v = 0
+    v = 1 if v else 0
+
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM voicemails WHERE id = ?", (vm_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown voicemail")
+        # flag is whitelisted above, so interpolating it into the SQL is safe.
+        conn.execute(
+            "UPDATE voicemails SET {} = ? WHERE id = ?".format(flag),
+            (v, vm_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "id": vm_id, flag: v}
+
+
+def _ymd_hm(created_at):
+    """YYYY-MM-DD / HH:MM (24h) from an epoch REAL, or ('', '') on failure."""
+    try:
+        d = _dt.datetime.fromtimestamp(float(created_at))
+    except (TypeError, ValueError):
+        return "", ""
+    return d.strftime("%Y-%m-%d"), d.strftime("%H:%M")
+
+
+def _mark_cell(flag, vm_id_esc, set_flag):
+    """FTC/FCC cell: check-mark iff filed, a link to the report page, and a
+    POST /complaint/{id}/mark toggle form whose hidden value is the OPPOSITE
+    of the current 0/1 state."""
+    mark = "\u2713" if set_flag else ""
+    opposite = "0" if set_flag else "1"
+    return (
+        "<td>{mark} <a href=\"/complaint/{id}/report\">Report</a> "
+        '<form method="post" action="/complaint/{id}/mark">'
+        '<input type="hidden" name="flag" value="{flag}">'
+        '<input type="hidden" name="value" value="{opposite}">'
+        '<button type="submit">toggle</button></form></td>'
+    ).format(mark=mark, id=vm_id_esc, flag=flag, opposite=opposite)
+
+
 def _render_index(items):
     parts = [
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',
         "<title>Voicemails</title>",
         "<style>"
-        "body{font-family:system-ui,sans-serif;max-width:640px;"
+        "body{font-family:system-ui,sans-serif;max-width:960px;"
         "margin:2rem auto;padding:0 1rem;color:#222}"
-        ".item{border-bottom:1px solid #ddd;padding:1rem 0}"
-        ".status{color:#888;font-style:italic}"
+        "table{border-collapse:collapse;width:100%}"
+        "th,td{padding:.4rem .5rem;text-align:left;"
+        "border-bottom:1px solid #ddd;white-space:nowrap}"
         "</style></head><body>",
         "<h1>Voicemails</h1>",
+        "<table>",
+        "<thead><tr>"
+        "<th>Date</th><th>Time</th><th>From</th><th>Callback</th>"
+        "<th>Recording</th><th>Transcription</th><th>Screenshots</th>"
+        "<th>FTC</th><th>FCC</th><th>Actions</th>"
+        "</tr></thead>",
+        "<tbody>",
     ]
     for it in items:
-        parts.append('<div class="item">')
-        parts.append(
-            '<audio controls src="/audio/%s"></audio>' % html.escape(it["id"])
-        )
-        if it["status"] != "done":
+        vm_id_esc = html.escape(it["id"], quote=True)
+        date, tim = _ymd_hm(it.get("created_at"))
+        caller = html.escape(it.get("caller_number") or "") or "\u2014"
+        callback = html.escape(it.get("callback_number") or "") or "\u2014"
+
+        rec = "<td>\u2713</td>" if it.get("audio_path") else "<td></td>"
+        if it["status"] == "done" and (it.get("transcript") or "").strip():
+            trans = "<td>\u2713</td>"
+        elif it["status"] == "processing":
             prog = it.get("progress")
-            if prog is not None:
-                parts.append(
-                    '<p class="status">Transcribing %d%%</p>' % int(prog))
-            else:
-                parts.append('<p class="status">Transcribing&hellip;</p>')
-        elif it["transcript"]:
-            parts.append("<p>%s</p>" % html.escape(it["transcript"]))
+            trans = "<td>%d%%</td>" % int(prog if prog is not None else 0)
         else:
-            parts.append("<p></p>")
-        if it.get("duration_secs") is not None:
-            parts.append(
-                '<small>%.1fs</small>' % float(it["duration_secs"])
-            )
+            trans = "<td></td>"
+        shots = ("<td>\u2713</td>" if it.get("has_screenshots")
+                 else "<td></td>")
+
+        parts.append("<tr>")
+        parts.append("<td>{}</td>".format(html.escape(date)))
+        parts.append("<td>{}</td>".format(html.escape(tim)))
+        parts.append("<td>{}</td>".format(caller))
+        parts.append("<td>{}</td>".format(callback))
+        parts.append(rec)
+        parts.append(trans)
+        parts.append(shots)
+        parts.append(_mark_cell("ftc_filed", vm_id_esc, it.get("ftc_filed")))
+        parts.append(_mark_cell("fcc_filed", vm_id_esc, it.get("fcc_filed")))
         parts.append(
-            '<p><a href="/complaint/%s">Report spam</a></p>'
-            % html.escape(it["id"])
-        )
-        parts.append(
-            '<form method="post" action="/delete/%s" '
+            '<td><a href="/complaint/{id}/report">Report</a> '
+            '<form method="post" action="/delete/{id}" '
             'onsubmit="return confirm(&#39;Delete this voicemail?&#39;);" '
             'style="display:inline">'
-            '<button type="submit">Delete</button></form>'
-            % html.escape(it["id"], quote=True)
+            '<button type="submit">Delete</button></form></td>'
+            .format(id=vm_id_esc)
         )
-        parts.append("</div>")
+        parts.append("</tr>")
+    parts.append(
+        "</tbody>"
+        "</table>"
+    )
     parts.append(
         "<script>"
         "async function refresh(){"
@@ -1037,7 +1127,8 @@ def match_entries_to_voicemails(entries):
             claimed.add(chosen["id"])
             conn.execute(
                 "UPDATE voicemails SET caller_number = ?,"
-                " caller_last4 = COALESCE(caller_last4, ?) WHERE id = ?",
+                " caller_last4 = COALESCE(caller_last4, ?),"
+                " has_screenshots = 1 WHERE id = ?",
                 (e["number"], e["last4"], chosen["id"]),
             )
             matched.append({"id": chosen["id"], "number": e["number"],

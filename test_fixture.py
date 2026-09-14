@@ -158,5 +158,50 @@ h = index_html()
 check(h.index("+10000000002") < h.index("+10000000001"),
       "rows ordered newest-first by created_at")
 
+
+# --- C9: mark route enforces auth when AUTH_TOKEN is set ------------------
+wipe()
+add("a1", 8500, status="done", transcript="t", audio_path="/a.wav")
+server.AUTH_TOKEN = "secret"
+try:
+    r = client.post("/complaint/a1/mark", data={"flag": "ftc_filed", "value": "1"})
+    check(r.status_code == 401, "mark route 401s WITHOUT bearer when AUTH_TOKEN set")
+    r = client.post("/complaint/a1/mark", data={"flag": "ftc_filed", "value": "1"},
+                    headers={"Authorization": "Bearer secret"})
+    check(r.status_code == 200, "mark route 200s WITH the correct bearer")
+finally:
+    server.AUTH_TOKEN = ""
+
+# --- C10: mark route echoes the vm id in its JSON -------------------------
+wipe()
+add("j1", 8600, status="done", transcript="t", audio_path="/a.wav")
+r = client.post("/complaint/j1/mark", data={"flag": "ftc_filed", "value": "1"})
+check(r.json().get("id") == "j1", "mark route echoes the vm id in JSON")
+
+# --- C11: done row with NO transcript -> transcription blank (else branch)
+wipe()
+add("e1", 8700, status="done", transcript=None, audio_path="/a.wav")
+n = index_html().count(CK)
+check(n == 1, "done-but-untranscribed row: only Recording check, got %d" % n)
+
+# --- C12: None created_at renders without crashing (date fallback path) ---
+wipe()
+add("nd1", None, status="done", transcript="t", caller_number="+15550000123", audio_path="/a.wav")
+check("+15550000123" in index_html(), "row with no created_at still renders (fallback)")
+
+# --- C13: index closes the <table> ----------------------------------------
+wipe()
+add("z1", 8800, status="done", transcript="t", audio_path="/a.wav")
+check("</table>" in index_html(), "index closes the <table>")
+
+# --- C14: toggle hidden value is the OPPOSITE of the current flag state ----
+wipe()
+add("t1", 8900, status="done", transcript="t", audio_path="/a.wav", ftc_filed=1, fcc_filed=0)
+h = index_html()
+check('value="ftc_filed"><input type="hidden" name="value" value="0">' in h,
+      "a SET FTC toggle offers value=0 (to clear it)")
+check('value="fcc_filed"><input type="hidden" name="value" value="1">' in h,
+      "an UNSET FCC toggle offers value=1 (to set it)")
+
 print("--- %d failed ---" % fails)
 sys.exit(1 if fails else 0)

@@ -23,10 +23,11 @@ in `_render_index` (near the `<table>` / `<h1>Voicemails</h1>`, L665-666).
    `@app.get("/export/pdf")` that:
    - calls `_check_auth(authorization)` FIRST (so the AUTH_TOKEN env var gates it
      exactly like /api/complaint etc.: no/invalid bearer -> 401 when AUTH_TOKEN is set).
-   - builds a PDF of the call log from `api_list()` using `reportlab` (e.g.
-     `reportlab.pdfgen.canvas.Canvas` writing to an `io.BytesIO`), drawing a title and
-     one line per voicemail (date/time from `_ymd_hm`, the raw `caller_number` and
-     `callback_number`).
+   - builds a PDF of the call log from `api_list()` using `reportlab`
+     (`reportlab.pdfgen.canvas.Canvas` writing to an `io.BytesIO`), constructed with
+     `pageCompression=0` so the log text is selectable/searchable in the output. Draw
+     a title line `Voicemail call log` and one line per voicemail containing the
+     date/time (from `_ymd_hm`), the `caller_number`, and the `callback_number`.
    - returns the PDF bytes with media type `application/pdf` (use
      `fastapi.responses.Response(content=..., media_type="application/pdf")`; add
      `Response` to the existing `from fastapi.responses import ...` line). Include a

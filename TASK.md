@@ -22,8 +22,9 @@ server.py:638 (`_mark_cell`) and the Actions `<td>` in `_render_index` (server.p
    - when `set_flag` is falsy: the cell shows a CLICKABLE red cross that links to
      `/complaint/{id}/report` and is styled `color:#c00`; the cross glyph is U+2717.
      The cell must NOT contain the green-check glyph U+2713 in this state.
-   - when `set_flag` is truthy: the cell shows a green check (glyph U+2713) styled
-     `color:#080`; the cell must NOT contain the cross glyph U+2717 in this state.
+   - when `set_flag` is truthy: the cell shows a green check (glyph U+2713) wrapped in a
+     `<span style="color:#080" ...>` element; the cell must NOT contain the cross glyph
+     U+2717 in this state.
    - in BOTH states, keep the existing toggle form posting to
      `/complaint/{id}/mark` (so done can be set/unset), with the hidden `flag` and a
      hidden `value` equal to the OPPOSITE of the current 0/1 state.
@@ -31,7 +32,8 @@ server.py:638 (`_mark_cell`) and the Actions `<td>` in `_render_index` (server.p
 2. Add a helper `def _actions_cell(vm_id_esc, done):` that returns the Actions `<td>`:
    - when `done` is falsy: a clickable red cross (U+2717, `color:#c00`) linking to
      `/complaint/{id}/report`; must NOT contain U+2713.
-   - when `done` is truthy: a green check (U+2713, `color:#080`); must NOT contain U+2717.
+   - when `done` is truthy: a green check (U+2713) wrapped in a `<span style="color:#080" ...>`
+     element; must NOT contain U+2717.
    - in BOTH states keep the Delete form posting to `/delete/{id}` (a `<button>` labelled
      Delete), so a voicemail can still be deleted.
    Then in `_render_index`, replace the inline Actions `<td>` (L701-708) with:

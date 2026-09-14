@@ -69,20 +69,36 @@ CASES = [
     ("actions done keeps a Delete form to /delete",
      lambda: "/delete/xy9" in act(True), True),
 
-    # --- integration: _render_index wires Actions to (ftc AND fcc) ---
-    ("render: item with only ftc filed -> Actions still NOT done (cross present)",
-     lambda: CROSS in target._render_index([
-         {"id": "r1", "created_at": 0, "status": "done", "transcript": "hi",
-          "caller_number": "3218661469", "callback_number": None,
-          "audio_path": "/a", "has_screenshots": 0,
-          "ftc_filed": 1, "fcc_filed": 0}]), True),
-    ("render: item with BOTH ftc and fcc filed -> Actions done (a check appears)",
-     lambda: CHECK in target._render_index([
-         {"id": "r2", "created_at": 0, "status": "done", "transcript": "hi",
-          "caller_number": "3218661469", "callback_number": None,
-          "audio_path": "/a", "has_screenshots": 0,
-          "ftc_filed": 1, "fcc_filed": 1}]), True),
+    # --- span-tail: the done glyph is a well-formed element immediately
+    # followed by the rest of the cell (kills a trailing-junk mutation) ---
+    ("mark done glyph is a closed span followed by whitespace",
+     lambda: "✓</span> " in mark(1, "fcc_filed"), True),
+    ("actions done glyph is a closed span followed by whitespace",
+     lambda: "✓</span> " in act(True), True),
+
+    # --- integration: Actions is done ONLY when (ftc AND fcc). A controlled
+    # row (no audio / not-done transcript / no screenshots) emits glyphs ONLY
+    # from the FTC/FCC/Actions cells, so counts isolate the AND wiring and
+    # catch both `and`->`or` and a dropped _actions_cell call. ---
+    ("render ftc=1,fcc=0: exactly one green check (FTC only; Actions NOT done)",
+     lambda: _row(ftc=1, fcc=0).count(CHECK) == 1, True),
+    ("render ftc=1,fcc=0: exactly two red crosses (FCC + Actions)",
+     lambda: _row(ftc=1, fcc=0).count(CROSS) == 2, True),
+    ("render ftc=1,fcc=1: three green checks (FTC+FCC+Actions), zero crosses",
+     lambda: (_row(ftc=1, fcc=1).count(CHECK) == 3) and
+             (_row(ftc=1, fcc=1).count(CROSS) == 0), True),
 ]
+
+
+def _row(ftc, fcc):
+    """One render row whose ONLY glyph-emitting cells are FTC/FCC/Actions:
+    no audio (rec empty), status not done/processing (transcript empty),
+    no screenshots."""
+    return target._render_index([
+        {"id": "rr", "created_at": 0, "status": "new", "transcript": None,
+         "caller_number": None, "callback_number": None,
+         "audio_path": None, "has_screenshots": 0,
+         "ftc_filed": ftc, "fcc_filed": fcc}])
 
 
 def main():

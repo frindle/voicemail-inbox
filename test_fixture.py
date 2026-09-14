@@ -203,5 +203,30 @@ check('value="ftc_filed"><input type="hidden" name="value" value="0">' in h,
 check('value="fcc_filed"><input type="hidden" name="value" value="1">' in h,
       "an UNSET FCC toggle offers value=1 (to set it)")
 
+
+# --- C15: fully-checked row -> exact <td>✓</td> markup (kills '✓'->'✓_X') --
+wipe()
+add("full", 9100, status="done", transcript="t", caller_number="+1700",
+    callback_number="+1701", audio_path="/f.wav", has_screenshots=1,
+    ftc_filed=1, fcc_filed=1)
+h = index_html()
+check("<td>✓</td>" in h, "checked status cell is exactly <td>✓</td> (not ✓_X)")
+check('<td>✓ <a href="/complaint/' in h, "a SET toggle cell renders exactly '✓ <a ...' (not ✓_X)")
+
+# --- C16: all-empty row -> exactly 3 empty status cells + unset-toggle shape
+wipe()
+add("mt", 9200, status="done", transcript=None, caller_number=None,
+    callback_number=None, audio_path=None, has_screenshots=0,
+    ftc_filed=0, fcc_filed=0)
+h = index_html()
+n = h.count("<td></td>")
+check(n == 3, "all-empty row has exactly 3 empty status cells (Rec/Trans/Shots), got %d" % n)
+check('<td> <a href="/complaint/' in h, "an UNSET toggle cell renders empty mark then '<a' (not _X)")
+
+# --- C17: id is HTML-attribute-escaped (kills quote=True->False) ----------
+wipe()
+add('q\u0022x', 9300, status="done", transcript="t", audio_path="/q.wav")
+check("&quot;" in index_html(), "vm id is attribute-escaped with quote=True")
+
 print("--- %d failed ---" % fails)
 sys.exit(1 if fails else 0)

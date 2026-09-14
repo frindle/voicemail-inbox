@@ -19,7 +19,6 @@ import uuid
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import (FileResponse, HTMLResponse, RedirectResponse,
                                Response)
-from reportlab.pdfgen.canvas import Canvas
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
@@ -789,6 +788,10 @@ def export_pdf(authorization: str = Header(default=None)):
     """Render the call log as a downloadable PDF. Read-only: never submits or
     mutates anything -- it only reads api_list() and draws text into a PDF."""
     _check_auth(authorization)
+
+    # Imported lazily so a missing reportlab never blocks app startup --
+    # only the PDF export itself needs it.
+    from reportlab.pdfgen.canvas import Canvas
 
     buf = io.BytesIO()
     # pageCompression=0 keeps the drawn text uncompressed so it stays

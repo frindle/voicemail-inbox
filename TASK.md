@@ -94,3 +94,9 @@ by test_fixture.py.
 ## Loop instruction
 
 Run `bash verify.sh` after every edit and keep editing until it prints `VERIFY_OK`.
+
+## Note
+
+For the TCPA cell the clickable glyph IS the form's submit control (the red
+cross / green check button), so a single click posts the toggle to /mark -- there
+is no separate report link for TCPA.

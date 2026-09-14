@@ -30,7 +30,7 @@ import sys
 TARGET = pathlib.Path('server.py')
 
 # frozen from TASK.md -- re-run `ollama-dispatch-scaffold --freeze-literals .`
-LITERALS = [[None, '_actions_cell'], [None, 'color:#c00'], [None, 'color:#080'], [None, '/complaint/'], [None, '/delete/']]
+LITERALS = [[None, '_tcpa_cell'], [None, '_delete_cell'], [None, 'tcpa_filed'], [None, '<th>TCPA</th>'], [None, 'color:#c00'], [None, 'color:#080'], [None, '/delete/']]
 
 
 def _parse_must_contain(task_text):

@@ -7,6 +7,7 @@ runs elsewhere (a Whisper job) and is written back via /internal/transcript --
 this app only STORES, SERVES, and DISPLAYS.
 """
 import html
+import io
 import json
 import os
 import re
@@ -16,7 +17,9 @@ import urllib.parse
 import uuid
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, RedirectResponse,
+                               Response)
+from reportlab.pdfgen.canvas import Canvas
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
@@ -75,6 +78,7 @@ def init_db():
             ("has_screenshots", "INTEGER DEFAULT 0"),
             ("ftc_filed", "INTEGER DEFAULT 0"),
             ("fcc_filed", "INTEGER DEFAULT 0"),
+            ("tcpa_filed", "INTEGER DEFAULT 0"),
         ):
             if col not in cols:
                 conn.execute(
@@ -173,6 +177,15 @@ def _normalize_phone(value):
     if len(digits) == 11 and digits.startswith("1"):
         digits = digits[1:]
     return digits
+
+
+def _format_phone(value):
+    """Format a conforming number as `(xxx) xxx-xxxx`; otherwise return the
+    original value unchanged (or `""` when empty/None)."""
+    digits = _normalize_phone(value)
+    if len(digits) == 10:
+        return "({}) {}-{}".format(digits[:3], digits[3:6], digits[6:])
+    return value if value else ""
 
 
 def extract_complaint_fields(transcript, caller_number, created_at):
@@ -378,7 +391,8 @@ def api_list():
         rows = conn.execute(
             "SELECT id, created_at, orig_name, status, transcript,"
             " duration_secs, caller_last4, progress, callback_number,"
-            " caller_number, audio_path, has_screenshots, ftc_filed, fcc_filed"
+            " caller_number, audio_path, has_screenshots, ftc_filed, fcc_filed,"
+            " tcpa_filed"
             " FROM voicemails ORDER BY created_at DESC"
         ).fetchall()
     finally:
@@ -399,6 +413,7 @@ def api_list():
             "has_screenshots": r["has_screenshots"],
             "ftc_filed": r["ftc_filed"],
             "fcc_filed": r["fcc_filed"],
+            "tcpa_filed": r["tcpa_filed"],
             "audio_url": "/audio/" + r["id"],
         }
         for r in rows
@@ -589,7 +604,7 @@ def complaint_update(
 
 # Whitelist of workflow flags the /mark route may touch. It ONLY records
 # human-filed state in this DB -- it never files or submits anything anywhere.
-_MARK_FLAGS = ("ftc_filed", "fcc_filed")
+_MARK_FLAGS = ("ftc_filed", "fcc_filed", "tcpa_filed")
 
 
 @app.post("/complaint/{vm_id}/mark")
@@ -636,18 +651,69 @@ def _ymd_hm(created_at):
 
 
 def _mark_cell(flag, vm_id_esc, set_flag):
-    """FTC/FCC cell: check-mark iff filed, a link to the report page, and a
-    POST /complaint/{id}/mark toggle form whose hidden value is the OPPOSITE
-    of the current 0/1 state."""
-    mark = "\u2713" if set_flag else ""
+    """FTC/FCC cell: a red cross (U+2717) linking to the report page when not
+    filed, a green check (U+2713) when filed; plus a POST /complaint/{id}/mark
+    toggle form whose hidden value is the OPPOSITE of the current 0/1 state."""
     opposite = "0" if set_flag else "1"
+    if set_flag:
+        mark = '<span style="color:#080">\u2713</span>'
+    else:
+        mark = ('<a href="/complaint/{id}/report" '
+                'style="color:#c00;text-decoration:none">\u2717</a>').format(
+                    id=vm_id_esc)
     return (
-        "<td>{mark} <a href=\"/complaint/{id}/report\">Report</a> "
+        "<td>{mark} "
         '<form method="post" action="/complaint/{id}/mark">'
         '<input type="hidden" name="flag" value="{flag}">'
         '<input type="hidden" name="value" value="{opposite}">'
         '<button type="submit">toggle</button></form></td>'
     ).format(mark=mark, id=vm_id_esc, flag=flag, opposite=opposite)
+
+
+def _tcpa_cell(vm_id_esc, set_flag):
+    """TCPA cell: a PURE MANUAL toggle -- the clickable glyph IS the submit
+    control (red cross U+2717 when not filed, green check U+2713 when filed),
+    posting flag=tcpa_filed with the OPPOSITE of the current 0/1 state. There
+    is no report flow for TCPA."""
+    if set_flag:
+        glyph, color, value = "\u2713", "#080", "0"
+    else:
+        glyph, color, value = "\u2717", "#c00", "1"
+    return (
+        '<td><form method="post" action="/complaint/{id}/mark">'
+        '<input type="hidden" name="flag" value="tcpa_filed">'
+        '<input type="hidden" name="value" value="{value}">'
+        '<button type="submit" style="color:{color};background:none;'
+        'border:none;font-size:1.2rem;cursor:pointer">{glyph}</button>'
+        "</form></td>"
+    ).format(id=vm_id_esc, value=value, color=color, glyph=glyph)
+
+
+def _delete_cell(vm_id_esc):
+    """Trailing cell: a small Delete control posting to /delete/{id}."""
+    return (
+        '<td><form method="post" action="/delete/{id}" '
+        'onsubmit="return confirm(&#39;Delete this voicemail?&#39;);" '
+        'style="display:inline">'
+        '<button type="submit">Delete</button></form></td>'
+    ).format(id=vm_id_esc)
+
+
+def _number_cell(vm_id_esc, field, value, other_field, other_value):
+    """From/Callback cell: the formatted number when present; otherwise an
+    inline form that POSTs to the existing /complaint/{id}/update route. The
+    hidden input carries the OTHER field's current value because that route
+    overwrites both caller_number and callback_number."""
+    if value:
+        return "<td>{}</td>".format(html.escape(_format_phone(value)))
+    other = html.escape(other_value or "", quote=True)
+    return (
+        '<td><form method="post" action="/complaint/{id}/update" '
+        'style="display:inline">'
+        '<input type="text" name="{field}" value="" placeholder="(xxx) xxx-xxxx">'
+        '<button type="submit">Save</button>'
+        '<input type="hidden" name="{other_field}" value="{other}"></form></td>'
+    ).format(id=vm_id_esc, field=field, other_field=other_field, other=other)
 
 
 def _render_index(items):
@@ -663,19 +729,18 @@ def _render_index(items):
         "border-bottom:1px solid #ddd;white-space:nowrap}"
         "</style></head><body>",
         "<h1>Voicemails</h1>",
+        '<p><a href="/export/pdf">Export PDF</a></p>',
         "<table>",
         "<thead><tr>"
         "<th>Date</th><th>Time</th><th>From</th><th>Callback</th>"
         "<th>Recording</th><th>Transcription</th><th>Screenshots</th>"
-        "<th>FTC</th><th>FCC</th><th>Actions</th>"
+        "<th>FTC</th><th>FCC</th><th>TCPA</th><th></th>"
         "</tr></thead>",
         "<tbody>",
     ]
     for it in items:
         vm_id_esc = html.escape(it["id"], quote=True)
         date, tim = _ymd_hm(it.get("created_at"))
-        caller = html.escape(it.get("caller_number") or "") or "\u2014"
-        callback = html.escape(it.get("callback_number") or "") or "\u2014"
 
         rec = "<td>\u2713</td>" if it.get("audio_path") else "<td></td>"
         if it["status"] == "done" and (it.get("transcript") or "").strip():
@@ -691,21 +756,17 @@ def _render_index(items):
         parts.append("<tr>")
         parts.append("<td>{}</td>".format(html.escape(date)))
         parts.append("<td>{}</td>".format(html.escape(tim)))
-        parts.append("<td>{}</td>".format(caller))
-        parts.append("<td>{}</td>".format(callback))
+        parts.append(_number_cell(vm_id_esc, "caller_number", it.get("caller_number"),
+                                  "callback_number", it.get("callback_number")))
+        parts.append(_number_cell(vm_id_esc, "callback_number", it.get("callback_number"),
+                                  "caller_number", it.get("caller_number")))
         parts.append(rec)
         parts.append(trans)
         parts.append(shots)
         parts.append(_mark_cell("ftc_filed", vm_id_esc, it.get("ftc_filed")))
         parts.append(_mark_cell("fcc_filed", vm_id_esc, it.get("fcc_filed")))
-        parts.append(
-            '<td><a href="/complaint/{id}/report">Report</a> '
-            '<form method="post" action="/delete/{id}" '
-            'onsubmit="return confirm(&#39;Delete this voicemail?&#39;);" '
-            'style="display:inline">'
-            '<button type="submit">Delete</button></form></td>'
-            .format(id=vm_id_esc)
-        )
+        parts.append(_tcpa_cell(vm_id_esc, it.get("tcpa_filed")))
+        parts.append(_delete_cell(vm_id_esc))
         parts.append("</tr>")
     parts.append(
         "</tbody>"
@@ -721,6 +782,42 @@ def _render_index(items):
         "</body></html>"
     )
     return "".join(parts)
+
+
+@app.get("/export/pdf")
+def export_pdf(authorization: str = Header(default=None)):
+    """Render the call log as a downloadable PDF. Read-only: never submits or
+    mutates anything -- it only reads api_list() and draws text into a PDF."""
+    _check_auth(authorization)
+
+    buf = io.BytesIO()
+    # pageCompression=0 keeps the drawn text uncompressed so it stays
+    # selectable/searchable in the output bytes.
+    canvas = Canvas(buf, pagesize=(612, 792), pageCompression=0)
+    y = 756
+    canvas.setFont("Helvetica", 14)
+    canvas.drawString(72, y, "Voicemail call log")
+    y -= 24
+    canvas.setFont("Helvetica", 10)
+    for it in api_list():
+        date, tim = _ymd_hm(it.get("created_at"))
+        line = "{} {}  from={}  callback={}".format(
+            date or "", tim or "",
+            it.get("caller_number") or "",
+            it.get("callback_number") or "")
+        if y < 72:
+            canvas.showPage()
+            y = 756
+        canvas.drawString(72, y, line)
+        y -= 14
+    canvas.showPage()
+    canvas.save()
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=call-log.pdf"},
+    )
 
 
 @app.get("/healthz")
